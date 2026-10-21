@@ -113,7 +113,10 @@ public sealed class AccessTokens(
         {
             var expiresIn = int.Parse(
                 message.ExpiresIn, CultureInfo.InvariantCulture);
-            return new(message.AccessToken, message.RefreshToken,
+            // A server that does not rotate may send no new refresh
+            // token; the current one then stays in use.
+            return new(message.AccessToken,
+                message.RefreshToken ?? refreshToken,
                 time.GetUtcNow().AddSeconds(expiresIn));
         }
         if (message.Error == "invalid_grant") return null;

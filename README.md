@@ -1,6 +1,6 @@
 # react-webapi-bff
 
-A React single-page app signs users in through an ASP.NET Core backend for frontend (BFF). The BFF is the OAuth client: it signs in with Keycloak using the authorization code flow with PKCE and pushed authorization requests, proves who it is with a signed JWT instead of a client secret, keeps the tokens in an encrypted HttpOnly cookie, and forwards the app's API calls with the access token attached. The browser never holds a token. Aspire starts Keycloak, the API, the BFF, and the Vite dev server with one command, and an end-to-end test project checks the security behavior against all of them.
+A React single-page app signs users in through an ASP.NET Core backend for frontend (BFF). The BFF is the OAuth client: it signs in with Keycloak using the authorization code flow with PKCE and pushed authorization requests, proves who it is with a signed JWT instead of a client secret, keeps the tokens in an encrypted HttpOnly cookie, and forwards the app's API calls with the access token attached. The page's scripts never see a token. Aspire starts Keycloak, the API, the BFF, and the Vite dev server with one command, and an end-to-end test project checks the security behavior against all of them.
 
 This repository is the companion to the article [Backend for Frontend: The Browser Gets a Cookie, Not a Token](https://www.orderfactory.com/articles/backend-for-frontend.html), which explains every setting below, including what a deployment must add. It continues [react-webapi-oidc](https://github.com/orderfactory/react-webapi-oidc) and its article, [OpenID Connect End to End](https://www.orderfactory.com/articles/openid-connect-end-to-end.html), where the browser app held its own tokens. [RFC 10017](https://www.rfc-editor.org/rfc/rfc10017.html) ranks the BFF as the most secure of the three architectures it describes for browser-based apps.
 
@@ -12,7 +12,7 @@ This repository is the companion to the article [Backend for Frontend: The Brows
 - CSRF defense: the app sends `X-CSRF: 1` on every call, and the BFF refuses calls without it. Sign-out, a form post, must come from the BFF's own origin (`Sec-Fetch-Site: same-origin`).
 - The BFF forwards exactly one route, `GET /api/forecast`, to `GET /forecast` on the API, with the access token, and removes the browser's cookie.
 - One refresh per refresh token: concurrent requests share it, and for a minute afterward, requests that still send the old cookie get the same tokens.
-- A session counts as active only while the BFF can still get an access token for it. `/bff/user` refreshes the token when it is due and answers 401 once Keycloak has ended the session, and a 401 from the API ends the BFF's session too.
+- A session counts as active only while the BFF can still get an access token for it. `/bff/user` refreshes the token when it is due and answers 401 once a refresh shows that Keycloak has ended the session, and a 401 from the API ends the BFF's session too.
 - Each session may make 100 calls a minute; the 101st gets 429.
 - A failed sign-in returns to the app, which offers it again. When Keycloak does not answer within 10 seconds, the BFF keeps using a token that has not expired yet and logs a warning.
 - Answers to the app's calls carry `Cache-Control: no-store`. Built for production, the app is served with the Content Security Policy `default-src 'self'; base-uri 'none'; frame-ancestors 'none'`, its hashed assets are cached for a year and its page is checked again on every visit, and the BFF sends HSTS.
@@ -87,7 +87,7 @@ The tests use MSTest on Microsoft.Testing.Platform, which `global.json` selects 
 
 `AppHost/realms/demo-realm.json` holds only the settings that differ from Keycloak's defaults.
 
-**Realm `demo`:** refresh token rotation stays off, Keycloak's default. RFC 9700 requires rotation or sender-constrained refresh tokens only for public clients, and the BFF's refresh tokens work only with its key. If a realm must rotate for other clients, the BFF copes within one instance; see the article.
+**Realm `demo`:** refresh token rotation stays off, Keycloak's default. RFC 9700 requires rotation or sender-constrained refresh tokens only for public clients, and Keycloak accepts the BFF's refresh tokens only from a caller that signs as the BFF. If a realm must rotate for other clients, the BFF copes within one instance; see the article.
 
 **Client `weather-api`**, the API: every flow off. It owns the client role `meteorologist`, which `jane` holds.
 
