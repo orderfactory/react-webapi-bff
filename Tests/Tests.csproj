@@ -12,6 +12,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AppHost\AppHost.csproj" />
+    <!-- For ClientAssertion, to sign as the BFF would. -->
+    <ProjectReference Include="..\Bff\Bff.csproj" />
   </ItemGroup>
 
 </Project>

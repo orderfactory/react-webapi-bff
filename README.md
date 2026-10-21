@@ -75,7 +75,7 @@ Keycloak runs without a data volume. It starts empty and imports `AppHost/realms
 
 ## Test
 
-The `Tests` project starts the AppHost, with Keycloak in its container, and checks the behavior above: sign-in through Keycloak's login form, the role check, the cookie's attributes, the CSRF header, the sign-out check, the shared refresh with and without rotation, a session ended in Keycloak, the rate limit, the published keys, a change of the BFF's key while Keycloak runs on, and a failed sign-in. Stop any running AppHost first, because the tests use the same fixed ports:
+The `Tests` project starts the AppHost, with Keycloak in its container, and checks the behavior above: sign-in through Keycloak's login form, the role check, the cookie's attributes, the CSRF header, the sign-out check, the shared refresh with and without rotation, a session ended in Keycloak, the rate limit, the published keys, Keycloak's acceptance of a second published key, as during a change of keys, and a failed sign-in. Stop any running AppHost first, because the tests use the same fixed ports:
 
 ```shell
 dotnet test --project Tests

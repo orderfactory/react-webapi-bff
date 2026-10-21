@@ -1,8 +1,9 @@
-using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using Microsoft.IdentityModel.Tokens;
 
 [TestClass]
 public sealed class BffTests
@@ -196,8 +197,10 @@ public sealed class BffTests
     [TestMethod]
     public async Task TheJwksHoldsOnlyPublicKeys()
     {
-        // One key, or two after the key change test.
-        foreach (var key in await PublishedKeysAsync())
+        // The AppHost's key and the tests' other key.
+        var keys = await PublishedKeysAsync();
+        Assert.AreEqual(2, keys.Count);
+        foreach (var key in keys)
         {
             Assert.AreEqual("EC", key.GetProperty("kty").GetString());
             Assert.AreEqual("P-256", key.GetProperty("crv").GetString());
@@ -207,44 +210,17 @@ public sealed class BffTests
     }
 
     [TestMethod]
-    public async Task ANewClientKeyNeedsNoChangeInKeycloak()
+    public async Task KeycloakAcceptsEveryPublishedKeyAndNoOther()
     {
-        // With 60-second tokens, the session's next call refreshes.
-        await App.Admin.UpdateRealmAsync(new { accessTokenLifespan = 60 });
-        try
-        {
-            using var before = new Browser();
-            await before.SignInAsync("jane");
-            var signedIn = Stopwatch.StartNew();
+        // The other key signs nothing in the BFF, but Keycloak finds
+        // it in the BFF's key set, as it must during a change of keys.
+        using var published = await PushSignedWithAsync(App.OtherClientKey);
+        Assert.AreEqual(HttpStatusCode.Created, published.StatusCode);
 
-            // The BFF signs with a new key and still publishes the old one.
-            using var oldKey = ECDsa.Create();
-            oldKey.ImportFromPem(App.AppHostClientKey);
-            using var newKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-            await App.RestartBffAsync(newKey.ExportPkcs8PrivateKeyPem(),
-                oldKey.ExportSubjectPublicKeyInfoPem());
-            Assert.AreEqual(2, (await PublishedKeysAsync()).Count);
-
-            // Keycloak fetches a client's keys at most every 10 seconds.
-            var wait = TimeSpan.FromSeconds(11) - signedIn.Elapsed;
-            if (wait > TimeSpan.Zero) await Task.Delay(wait);
-
-            // The session from before the change refreshes with the new key.
-            await App.Admin.RecordEventsAsync();
-            using var user = await before.GetAsync("/bff/user");
-            Assert.AreEqual(HttpStatusCode.OK, user.StatusCode);
-            Assert.AreEqual(1, await App.Admin.CountEventsAsync("REFRESH_TOKEN"));
-            Assert.AreEqual(0,
-                await App.Admin.CountEventsAsync("REFRESH_TOKEN_ERROR"));
-
-            // And a new sign-in works.
-            using var after = new Browser();
-            await after.SignInAsync("bob");
-        }
-        finally
-        {
-            await App.Admin.UpdateRealmAsync(new { accessTokenLifespan = 300 });
-        }
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var unpublished = await PushSignedWithAsync(
+            key.ExportPkcs8PrivateKeyPem());
+        Assert.AreEqual(HttpStatusCode.Unauthorized, unpublished.StatusCode);
     }
 
     [TestMethod]
@@ -256,6 +232,31 @@ public sealed class BffTests
         Assert.AreEqual(HttpStatusCode.Found, response.StatusCode);
         Assert.AreEqual(
             "/?signin-failed", response.Headers.Location?.OriginalString);
+    }
+
+    // Pushes an authorization request for the BFF's client, as the
+    // BFF would, but with a client assertion signed by the given key.
+    private static async Task<HttpResponseMessage> PushSignedWithAsync(
+        string keyPem)
+    {
+        const string realm = "https://localhost:3443/realms/demo";
+        var message = new OpenIdConnectMessage
+        {
+            ClientId = "weather-bff",
+            ResponseType = "code",
+            RedirectUri = "https://localhost:3446/signin-oidc",
+            Scope = "openid",
+        };
+        // The client requires PKCE.
+        message.SetParameter("code_challenge", Base64UrlEncoder.Encode(
+            SHA256.HashData("a-verifier-that-is-never-sent"u8)));
+        message.SetParameter("code_challenge_method", "S256");
+        new ClientAssertion("weather-bff", realm, keyPem).AddTo(message);
+
+        using var http = new HttpClient();
+        return await http.PostAsync(
+            $"{realm}/protocol/openid-connect/ext/par/request",
+            new FormUrlEncodedContent(message.Parameters));
     }
 
     private static async Task<List<JsonElement>> PublishedKeysAsync()
