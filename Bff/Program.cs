@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
@@ -18,10 +17,9 @@ string Setting(string key) => builder.Configuration[key]
 
 // The client's private key, in PEM. In production it comes from a
 // secret store; in development, the AppHost creates one per run.
-var clientKey = ECDsa.Create();
-clientKey.ImportFromPem(Setting("ClientKey"));
-var assertion = new ClientAssertion(
-    "weather-bff", Setting("Authority"), clientKey);
+// OtherClientKey is set only during a change of keys.
+var assertion = new ClientAssertion("weather-bff", Setting("Authority"),
+    Setting("ClientKey"), builder.Configuration["OtherClientKey"]);
 
 builder.Services.AddSingleton(assertion);
 builder.Services.AddSingleton<AccessTokens>();
@@ -127,6 +125,12 @@ app.UseStaticFiles(new StaticFileOptions
         headers.ContentSecurityPolicy =
             "default-src 'self'; base-uri 'none'; frame-ancestors 'none'";
         headers.XContentTypeOptions = "nosniff";
+        // Vite names each asset after a hash of its content, so only
+        // the page has to be checked again after a deployment.
+        headers.CacheControl =
+            file.Context.Request.Path.StartsWithSegments("/assets")
+                ? "max-age=31536000, immutable"
+                : "no-cache";
     },
 });
 

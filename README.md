@@ -6,7 +6,7 @@ This repository is the companion to the article [Backend for Frontend: The Brows
 
 ## Features
 
-- The BFF is a confidential client that authenticates with `private_key_jwt` (ES256). It publishes its public key at `/bff/jwks`, and Keycloak reads it from there, so no secret exists and a new key needs no change in Keycloak.
+- The BFF is a confidential client that authenticates with `private_key_jwt` (ES256). It publishes its public key at `/bff/jwks`, and Keycloak reads it from there, so no secret exists and a new key needs no change in Keycloak. During a change of keys, the BFF publishes the other key as well.
 - Sign-in uses the authorization code flow with PKCE (S256) and pushed authorization requests (PAR), which the realm requires for this client.
 - The session cookie, `__Host-Http-bff`, is HttpOnly, Secure, SameSite=Strict, and Path=/, with no Domain, as RFC 10017 recommends. ASP.NET Core Data Protection encrypts the tokens inside it.
 - CSRF defense: the app sends `X-CSRF: 1` on every call, and the BFF refuses calls without it. Sign-out, a form post, must come from the BFF's own origin (`Sec-Fetch-Site: same-origin`).
@@ -14,8 +14,8 @@ This repository is the companion to the article [Backend for Frontend: The Brows
 - One refresh per refresh token: concurrent requests share it, and for a minute afterward, requests that still send the old cookie get the same tokens.
 - A session counts as active only while the BFF can still get an access token for it. `/bff/user` refreshes the token when it is due and answers 401 once Keycloak has ended the session, and a 401 from the API ends the BFF's session too.
 - Each session may make 100 calls a minute; the 101st gets 429.
-- A failed sign-in returns to the app, which offers it again. When Keycloak does not answer within 10 seconds, the BFF keeps using a token that has not expired yet.
-- Answers to the app's calls carry `Cache-Control: no-store`. Built for production, the app is served with the Content Security Policy `default-src 'self'; base-uri 'none'; frame-ancestors 'none'`, and the BFF sends HSTS.
+- A failed sign-in returns to the app, which offers it again. When Keycloak does not answer within 10 seconds, the BFF keeps using a token that has not expired yet and logs a warning.
+- Answers to the app's calls carry `Cache-Control: no-store`. Built for production, the app is served with the Content Security Policy `default-src 'self'; base-uri 'none'; frame-ancestors 'none'`, its hashed assets are cached for a year and its page is checked again on every visit, and the BFF sends HSTS.
 - The API is the one from react-webapi-oidc without its CORS policy, which the browser no longer needs. It checks the signature, issuer, audience, expiry (with a 30-second clock tolerance), and the `meteorologist` role.
 
 ## System overview
@@ -75,7 +75,7 @@ Keycloak runs without a data volume. It starts empty and imports `AppHost/realms
 
 ## Test
 
-The `Tests` project starts the AppHost, with Keycloak in its container, and checks the behavior above: sign-in through Keycloak's login form, the role check, the cookie's attributes, the CSRF header, the sign-out check, the shared refresh with and without rotation, a session ended in Keycloak, the rate limit, the published key, and a failed sign-in. Stop any running AppHost first, because the tests use the same fixed ports:
+The `Tests` project starts the AppHost, with Keycloak in its container, and checks the behavior above: sign-in through Keycloak's login form, the role check, the cookie's attributes, the CSRF header, the sign-out check, the shared refresh with and without rotation, a session ended in Keycloak, the rate limit, the published keys, a change of the BFF's key while Keycloak runs on, and a failed sign-in. Stop any running AppHost first, because the tests use the same fixed ports:
 
 ```shell
 dotnet test --project Tests
@@ -118,6 +118,7 @@ The demo runs on one machine. A deployment supplies these settings to the BFF:
 | `Authority` | Keycloak's issuer URL for the realm |
 | `ApiUrl` | The API's base URL |
 | `ClientKey` | The BFF's P-256 private key in PEM, from a secret store. Register the client in Keycloak with **Use JWKS URL** pointing at the BFF's `/bff/jwks`. |
+| `OtherClientKey` | Only during a change of keys: the public key, in PEM, of the key before or after `ClientKey`, which the BFF publishes but does not sign with. The article describes the steps. |
 | `DataProtection:KeysPath` | A folder for the Data Protection key ring that survives restarts and that every instance shares. Required outside Development; protect it, because the keys decrypt every session. |
 | `ASPNETCORE_FORWARDEDHEADERS_ENABLED` | `true` behind a TLS-terminating proxy, so that the BFF builds `https://` redirect URIs; only when the proxy is the only way in |
 | `AllowedHosts` | The BFF's public host name |

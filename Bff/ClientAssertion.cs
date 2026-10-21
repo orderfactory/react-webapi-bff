@@ -14,38 +14,53 @@ public sealed class ClientAssertion
     private readonly SigningCredentials credentials;
     private readonly JsonWebTokenHandler handler = new();
 
-    public ClientAssertion(string clientId, string issuer, ECDsa key)
+    // keyPem is the private key that signs. During a key change,
+    // otherKeyPem is the public key before or after it, which the
+    // BFF publishes but never signs with.
+    public ClientAssertion(string clientId, string issuer,
+        string keyPem, string? otherKeyPem = null)
     {
-        if (key.KeySize != 256)
-        {
-            throw new ArgumentException("The client key must be P-256.");
-        }
         this.clientId = clientId;
         this.issuer = issuer;
 
-        var q = key.ExportParameters(includePrivateParameters: false).Q;
-        var x = Base64UrlEncoder.Encode(q.X);
-        var y = Base64UrlEncoder.Encode(q.Y);
-        // The key ID is the key's RFC 7638 thumbprint.
-        var keyId = Base64UrlEncoder.Encode(SHA256.HashData(
-            Encoding.UTF8.GetBytes(
-                $$"""{"crv":"P-256","kty":"EC","x":"{{x}}","y":"{{y}}"}""")));
-
-        credentials = new(new ECDsaSecurityKey(key) { KeyId = keyId },
+        var key = ECDsa.Create();
+        key.ImportFromPem(keyPem);
+        var jwk = PublicJwk(key);
+        credentials = new(new ECDsaSecurityKey(key) { KeyId = jwk.Kid },
             SecurityAlgorithms.EcdsaSha256);
-        // Public members only: the private key never leaves the BFF.
-        Jwks = new
+
+        Jwk[] keys = [jwk];
+        if (otherKeyPem is not null)
         {
-            keys = new[]
-            {
-                new { kty = "EC", crv = "P-256", x, y,
-                    kid = keyId, use = "sig", alg = "ES256" },
-            },
-        };
+            using var otherKey = ECDsa.Create();
+            otherKey.ImportFromPem(otherKeyPem);
+            keys = [jwk, PublicJwk(otherKey)];
+        }
+        Jwks = new { keys };
     }
 
     // Published at /bff/jwks.
     public object Jwks { get; }
+
+    private sealed record Jwk(string Kty, string Crv, string X, string Y,
+        string Kid, string Use, string Alg);
+
+    // Public members only: the private key never leaves the BFF.
+    private static Jwk PublicJwk(ECDsa key)
+    {
+        if (key.KeySize != 256)
+        {
+            throw new ArgumentException("Client keys must be P-256.");
+        }
+        var q = key.ExportParameters(includePrivateParameters: false).Q;
+        var x = Base64UrlEncoder.Encode(q.X);
+        var y = Base64UrlEncoder.Encode(q.Y);
+        // The key ID is the key's RFC 7638 thumbprint.
+        var kid = Base64UrlEncoder.Encode(SHA256.HashData(
+            Encoding.UTF8.GetBytes(
+                $$"""{"crv":"P-256","kty":"EC","x":"{{x}}","y":"{{y}}"}""")));
+        return new("EC", "P-256", x, y, kid, "sig", "ES256");
+    }
 
     public void AddTo(OpenIdConnectMessage message)
     {

@@ -14,7 +14,8 @@ public sealed class AccessTokens(
     IOptionsMonitor<OpenIdConnectOptions> oidcOptions,
     ClientAssertion assertion,
     HybridCache cache,
-    TimeProvider time)
+    TimeProvider time,
+    ILogger<AccessTokens> logger)
 {
     private const string Cookie =
         CookieAuthenticationDefaults.AuthenticationScheme;
@@ -61,7 +62,10 @@ public sealed class AccessTokens(
             e is HttpRequestException or OperationCanceledException
             && expiresAt > time.GetUtcNow())
         {
-            // Keycloak did not answer, but the token is still valid.
+            // The refresh failed, but the token is still valid. Log it,
+            // or the failure goes unseen until the token expires.
+            logger.LogWarning(e, "Refresh failed; the access token is "
+                + "used until it expires at {ExpiresAt}.", expiresAt);
             return props.GetTokenValue("access_token");
         }
 

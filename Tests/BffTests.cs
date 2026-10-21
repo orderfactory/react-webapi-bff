@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 [TestClass]
@@ -192,18 +194,57 @@ public sealed class BffTests
     }
 
     [TestMethod]
-    public async Task TheJwksHoldsOnlyThePublicKey()
+    public async Task TheJwksHoldsOnlyPublicKeys()
     {
-        using var browser = new Browser();
-        using var response = await browser.GetAsync("/bff/jwks", csrf: false);
-        var keys = (await response.Content.ReadFromJsonAsync<JsonElement>())
-            .GetProperty("keys");
-        Assert.AreEqual(1, keys.GetArrayLength());
-        var key = keys[0];
-        Assert.AreEqual("EC", key.GetProperty("kty").GetString());
-        Assert.AreEqual("P-256", key.GetProperty("crv").GetString());
-        Assert.IsTrue(key.TryGetProperty("kid", out _));
-        Assert.IsFalse(key.TryGetProperty("d", out _));
+        // One key, or two after the key change test.
+        foreach (var key in await PublishedKeysAsync())
+        {
+            Assert.AreEqual("EC", key.GetProperty("kty").GetString());
+            Assert.AreEqual("P-256", key.GetProperty("crv").GetString());
+            Assert.IsTrue(key.TryGetProperty("kid", out _));
+            Assert.IsFalse(key.TryGetProperty("d", out _));
+        }
+    }
+
+    [TestMethod]
+    public async Task ANewClientKeyNeedsNoChangeInKeycloak()
+    {
+        // With 60-second tokens, the session's next call refreshes.
+        await App.Admin.UpdateRealmAsync(new { accessTokenLifespan = 60 });
+        try
+        {
+            using var before = new Browser();
+            await before.SignInAsync("jane");
+            var signedIn = Stopwatch.StartNew();
+
+            // The BFF signs with a new key and still publishes the old one.
+            using var oldKey = ECDsa.Create();
+            oldKey.ImportFromPem(App.AppHostClientKey);
+            using var newKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            await App.RestartBffAsync(newKey.ExportPkcs8PrivateKeyPem(),
+                oldKey.ExportSubjectPublicKeyInfoPem());
+            Assert.AreEqual(2, (await PublishedKeysAsync()).Count);
+
+            // Keycloak fetches a client's keys at most every 10 seconds.
+            var wait = TimeSpan.FromSeconds(11) - signedIn.Elapsed;
+            if (wait > TimeSpan.Zero) await Task.Delay(wait);
+
+            // The session from before the change refreshes with the new key.
+            await App.Admin.RecordEventsAsync();
+            using var user = await before.GetAsync("/bff/user");
+            Assert.AreEqual(HttpStatusCode.OK, user.StatusCode);
+            Assert.AreEqual(1, await App.Admin.CountEventsAsync("REFRESH_TOKEN"));
+            Assert.AreEqual(0,
+                await App.Admin.CountEventsAsync("REFRESH_TOKEN_ERROR"));
+
+            // And a new sign-in works.
+            using var after = new Browser();
+            await after.SignInAsync("bob");
+        }
+        finally
+        {
+            await App.Admin.UpdateRealmAsync(new { accessTokenLifespan = 300 });
+        }
     }
 
     [TestMethod]
@@ -215,5 +256,13 @@ public sealed class BffTests
         Assert.AreEqual(HttpStatusCode.Found, response.StatusCode);
         Assert.AreEqual(
             "/?signin-failed", response.Headers.Location?.OriginalString);
+    }
+
+    private static async Task<List<JsonElement>> PublishedKeysAsync()
+    {
+        using var browser = new Browser();
+        using var response = await browser.GetAsync("/bff/jwks", csrf: false);
+        var jwks = await response.Content.ReadFromJsonAsync<JsonElement>();
+        return [.. jwks.GetProperty("keys").EnumerateArray()];
     }
 }

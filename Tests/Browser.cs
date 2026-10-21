@@ -2,8 +2,8 @@ using System.Net;
 using System.Text.RegularExpressions;
 
 // An HTTP client that keeps cookies and signs in through Keycloak's
-// login form, as a browser would. SameSite and cookie prefixes are
-// browser rules; a browser test checks those.
+// login form, as a browser would. It does not apply browser rules,
+// such as SameSite and cookie prefixes; only a browser can test those.
 public sealed partial class Browser : IDisposable
 {
     public static readonly Uri Bff = new("https://localhost:3446");
