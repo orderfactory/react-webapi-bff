@@ -1,0 +1,7 @@
+@Api_HostAddress = https://localhost:3445
+
+# No token: 401 Unauthorized. Only the BFF holds access tokens now;
+# through it (https://localhost:3446), jane gets 200 OK and bob 403.
+GET {{Api_HostAddress}}/forecast
+
+###
