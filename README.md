@@ -6,7 +6,7 @@ This repository is the companion to the article [Backend for Frontend: The Brows
 
 ## Features
 
-- The BFF is a confidential client that authenticates with `private_key_jwt` (ES256). It publishes its public key at `/bff/jwks`, and Keycloak reads it from there, so no secret exists and a new key needs no change in Keycloak. During a change of keys, the BFF publishes the other key as well.
+- The BFF is a confidential client that authenticates with `private_key_jwt` (ES256). It publishes its public key at `/bff/jwks`, and Keycloak reads it from there, so no shared secret exists and a new key needs no change in Keycloak. During a change of keys, the BFF publishes the other key as well.
 - Sign-in uses the authorization code flow with PKCE (S256) and pushed authorization requests (PAR), which the realm requires for this client.
 - The session cookie, `__Host-Http-bff`, is HttpOnly, Secure, SameSite=Strict, and Path=/, with no Domain, as RFC 10017 recommends. ASP.NET Core Data Protection encrypts the tokens inside it.
 - CSRF defense: the app sends `X-CSRF: 1` on every call, and the BFF refuses calls without it. Sign-out, a form post, must come from the BFF's own origin (`Sec-Fetch-Site: same-origin`).
@@ -14,7 +14,7 @@ This repository is the companion to the article [Backend for Frontend: The Brows
 - One refresh per refresh token: concurrent requests share it, and for a minute afterward, requests that still send the old cookie get the same tokens.
 - A session counts as active only while the BFF can still get an access token for it. `/bff/user` refreshes the token when it is due and answers 401 once a refresh shows that Keycloak has ended the session, and a 401 from the API ends the BFF's session too.
 - Each session may make 100 calls a minute; the 101st gets 429.
-- A failed sign-in returns to the app, which offers it again. When Keycloak does not answer within 10 seconds, the BFF keeps using a token that has not expired yet and logs a warning.
+- A sign-in that fails at the callback returns to the app, which offers it again. When Keycloak does not answer within 10 seconds, the BFF keeps using a token that has not expired yet and logs a warning.
 - Answers to the app's calls carry `Cache-Control: no-store`. Built for production, the app is served with the Content Security Policy `default-src 'self'; base-uri 'none'; frame-ancestors 'none'`, its hashed assets are cached for a year and its page is checked again on every visit, and the BFF sends HSTS.
 - The API is the one from react-webapi-oidc without its CORS policy, which the browser no longer needs. It checks the signature, issuer, audience, expiry (with a 30-second clock tolerance), and the `meteorologist` role.
 

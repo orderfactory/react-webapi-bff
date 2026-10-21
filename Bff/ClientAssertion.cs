@@ -25,6 +25,9 @@ public sealed class ClientAssertion
 
         var key = ECDsa.Create();
         key.ImportFromPem(keyPem);
+        // Fail now, not at the first assertion: ClientKey must be the
+        // private key, not a public-only PEM.
+        _ = key.ExportParameters(includePrivateParameters: true);
         var jwk = PublicJwk(key);
         credentials = new(new ECDsaSecurityKey(key) { KeyId = jwk.Kid },
             SecurityAlgorithms.EcdsaSha256);
