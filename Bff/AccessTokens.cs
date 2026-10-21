@@ -51,8 +51,19 @@ public sealed class AccessTokens(
         var refreshToken = props.GetTokenValue("refresh_token")!;
         var key = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(refreshToken)));
-        var tokens = await cache.GetOrCreateAsync(
-            key, ct => RefreshAsync(refreshToken, ct), oneMinute);
+        Tokens? tokens;
+        try
+        {
+            tokens = await cache.GetOrCreateAsync(
+                key, ct => RefreshAsync(refreshToken, ct), oneMinute);
+        }
+        catch (Exception e) when (
+            e is HttpRequestException or OperationCanceledException
+            && expiresAt > time.GetUtcNow())
+        {
+            // Keycloak did not answer, but the token is still valid.
+            return props.GetTokenValue("access_token");
+        }
 
         if (tokens is null)
         {

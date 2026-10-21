@@ -3,6 +3,7 @@
   <Project Path="AppHost/AppHost.csproj" />
   <Project Path="Bff/Bff.csproj" />
   <Project Path="ServiceDefaults/ServiceDefaults.csproj" />
+  <Project Path="Tests/Tests.csproj" />
   <Project Path="spa/spa.esproj">
     <Build />
     <Deploy />

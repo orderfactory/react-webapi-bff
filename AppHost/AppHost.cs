@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 
 var builder = DistributedApplication
     .CreateBuilder(args);
@@ -13,23 +12,19 @@ const string keycloakImageTag = "26.8.1";
 
 var authority = $"https://localhost:{keycloakPort}/realms/{realm}";
 
-// A new key pair on every run. Keycloak gets the public key in
-// a self-signed certificate; the BFF gets the private key.
+// A new client key on every run. The BFF gets the private key
+// and publishes the public key, which Keycloak fetches.
 using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-using var certificate = new CertificateRequest(
-        "CN=weather-bff", key, HashAlgorithmName.SHA256)
-    .CreateSelfSigned(DateTimeOffset.UtcNow,
-        DateTimeOffset.UtcNow.AddDays(1));
 var clientKey = builder.AddParameter("bff-client-key",
-    Convert.ToBase64String(key.ExportPkcs8PrivateKey()),
-    secret: true);
+    key.ExportPkcs8PrivateKeyPem(), secret: true);
 
 var keycloak = builder
     .AddKeycloak("keycloak", keycloakPort)
     .WithImageTag(keycloakImageTag)
     .WithRealmImport("./realms")
-    .WithEnvironment("BFF_CERTIFICATE",
-        Convert.ToBase64String(certificate.RawData));
+    // Keycloak trusts the PEM files in conf/truststores, so it
+    // trusts the development certificate that the BFF serves.
+    .WithContainerCertificatePaths("/opt/keycloak/conf/truststores");
 
 var api = builder
     .AddProject<Projects.Api>("api")
@@ -40,7 +35,7 @@ var api = builder
 // Reached only through the BFF.
 var spa = builder.AddViteApp("spa", "../spa");
 
-builder.AddProject<Projects.Bff>("bff")
+var bff = builder.AddProject<Projects.Bff>("bff")
     .WithEndpoint("https", e => e.Port = bffPort)
     .WithEnvironment("Authority", authority)
     .WithEnvironment("ClientKey", clientKey)
@@ -49,5 +44,9 @@ builder.AddProject<Projects.Bff>("bff")
     .WithHttpHealthCheck("/health")
     .WaitFor(api)
     .WaitFor(spa);
+
+// The realm file reads this URL from the environment.
+keycloak.WithEnvironment("BFF_JWKS_URL",
+    ReferenceExpression.Create($"{bff.GetEndpoint("https")}/bff/jwks"));
 
 builder.Build().Run();

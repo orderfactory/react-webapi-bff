@@ -46,8 +46,8 @@
         "pkce.code.challenge.method": "S256",
         "require.pushed.authorization.requests": "true",
         "post.logout.redirect.uris": "https://localhost:3446/signout-callback-oidc",
-        "use.jwks.url": "false",
-        "jwt.credential.certificate": "${BFF_CERTIFICATE}",
+        "use.jwks.url": "true",
+        "jwks.url": "${BFF_JWKS_URL}",
         "token.endpoint.auth.signing.alg": "ES256",
         "oauth2.device.authorization.grant.enabled": "false",
         "oidc.ciba.grant.enabled": "false"

@@ -1,10 +1,9 @@
-using System.Net;
 using System.Security.Cryptography;
-using Microsoft.AspNetCore.Authentication;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
-using Yarp.ReverseProxy.Transforms;
 
 var builder = WebApplication
     .CreateBuilder(args);
@@ -17,9 +16,10 @@ const string oidc = OpenIdConnectDefaults.AuthenticationScheme;
 string Setting(string key) => builder.Configuration[key]
     ?? throw new InvalidOperationException($"{key} is not set.");
 
+// The client's private key, in PEM. In production it comes from a
+// secret store; in development, the AppHost creates one per run.
 var clientKey = ECDsa.Create();
-clientKey.ImportPkcs8PrivateKey(
-    Convert.FromBase64String(Setting("ClientKey")), out _);
+clientKey.ImportFromPem(Setting("ClientKey"));
 var assertion = new ClientAssertion(
     "weather-bff", Setting("Authority"), clientKey);
 
@@ -27,6 +27,35 @@ builder.Services.AddSingleton(assertion);
 builder.Services.AddSingleton<AccessTokens>();
 builder.Services.AddHybridCache();
 builder.Services.AddHttpForwarder();
+
+// The session is only as durable as the keys that encrypt it, so
+// every instance needs the same key ring and application name.
+var dataProtection = builder.Services.AddDataProtection()
+    .SetApplicationName("weather-bff");
+if (builder.Configuration["DataProtection:KeysPath"] is { } keysPath)
+{
+    dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+}
+else if (!builder.Environment.IsDevelopment())
+{
+    throw new InvalidOperationException(
+        "DataProtection:KeysPath is not set.");
+}
+
+// Each session gets its own budget, so a script that has taken
+// over one session cannot flood the API through the BFF.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("session", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.User.FindFirst("sid")?.Value ?? "",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1),
+            }));
+});
 
 builder.Services
     .AddAuthentication(cookie)
@@ -55,6 +84,15 @@ builder.Services
         options.MapInboundClaims = false;
         options.TokenValidationParameters.NameClaimType =
             "preferred_username";
+        // Give up on Keycloak after 10 seconds, not the default 60.
+        options.BackchannelTimeout = TimeSpan.FromSeconds(10);
+        // A failed sign-in returns to the app, which offers it again.
+        options.Events.OnRemoteFailure = context =>
+        {
+            context.Response.Redirect("/?signin-failed");
+            context.HandleResponse();
+            return Task.CompletedTask;
+        };
         // Authenticate with a signed JWT, not a secret.
         options.Events.OnPushAuthorization = context =>
         {
@@ -73,14 +111,23 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+}
+
 // In production, the built app comes from wwwroot. It runs no
 // inline script, so its pages get a strict policy.
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
 {
     OnPrepareResponse = file =>
-        file.Context.Response.Headers.ContentSecurityPolicy =
-            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+    {
+        var headers = file.Context.Response.Headers;
+        headers.ContentSecurityPolicy =
+            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'";
+        headers.XContentTypeOptions = "nosniff";
+    },
 });
 
 // CSRF defense: the app's scripts send this header. A page on
@@ -89,74 +136,40 @@ app.UseStaticFiles(new StaticFileOptions
 app.Use((context, next) =>
 {
     var path = context.Request.Path;
-    var fromScript = path.StartsWithSegments("/api")
-        || path.StartsWithSegments("/bff/user");
-    if (fromScript && context.Request.Headers["X-CSRF"] != "1")
+    if (!path.StartsWithSegments("/api")
+        && !path.StartsWithSegments("/bff/user"))
+    {
+        return next(context);
+    }
+    if (context.Request.Headers["X-CSRF"] != "1")
     {
         context.Response.StatusCode = 400;
         return Task.CompletedTask;
     }
+    // The answers hold personal data, so nothing may cache them.
+    context.Response.OnStarting(() =>
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        return Task.CompletedTask;
+    });
     return next(context);
 });
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 app.MapDefaultEndpoints();
+app.MapBffEndpoints();
 
-var tokens = app.Services.GetRequiredService<AccessTokens>();
-
-app.MapGet("/bff/login", () => TypedResults.Challenge(
-    new() { RedirectUri = "/" }, [oidc]));
-
-// A form cannot send X-CSRF, so check where the post came from.
-app.MapPost("/bff/logout", (HttpRequest request) =>
-    request.Headers["Sec-Fetch-Site"] == "same-origin"
-        ? Results.SignOut(new() { RedirectUri = "/" }, [cookie, oidc])
-        : Results.StatusCode(403));
-
-// A session is active while the BFF can still get a token for it.
-app.MapGet("/bff/user", async (HttpContext context) =>
-    await tokens.GetAsync(context) is null
-        ? Results.Unauthorized()
-        : Results.Ok(new { Name = context.User.Identity?.Name }))
-    .RequireAuthorization();
-
-// The only API route: GET /api/forecast goes to GET /forecast.
-app.MapForwarder("/api/forecast", Setting("ApiUrl"), transforms =>
-{
-    transforms.AddPathSet("/forecast");
-    transforms.AddRequestHeaderRemove("Cookie");
-    transforms.AddRequestTransform(async context =>
-    {
-        var token = await tokens.GetAsync(context.HttpContext);
-        if (token is null)
-        {
-            // A status set here ends the request unforwarded.
-            context.HttpContext.Response.StatusCode = 401;
-            return;
-        }
-        context.ProxyRequest.Headers.Authorization =
-            new("Bearer", token);
-    });
-    // If the API refuses the token, the session is over too.
-    transforms.AddResponseTransform(async context =>
-    {
-        if (context.ProxyResponse?.StatusCode
-            == HttpStatusCode.Unauthorized)
-        {
-            await context.HttpContext.SignOutAsync(cookie);
-        }
-    });
-})
-.RequireAuthorization()
-.WithMetadata(new HttpMethodMetadata(["GET"]));
+// The app's only API route: GET /api/forecast to GET /forecast.
+app.MapApiRoute(HttpMethods.Get, "/api/forecast",
+    Setting("ApiUrl"), "/forecast");
 
 // In development, the Vite dev server serves the app.
 if (app.Configuration["SpaDevServer"] is { } spaDevServer)
 {
-    app.MapForwarder("/{**path}", spaDevServer, transforms =>
-        transforms.AddRequestHeaderRemove("Cookie"));
+    app.MapDevServer(spaDevServer);
 }
 
 app.Run();
