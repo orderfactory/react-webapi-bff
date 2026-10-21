@@ -60,10 +60,19 @@ public static class App
     {
         clientKey = key;
         otherClientKey = otherKey;
-        var result = await app!.ResourceCommands.ExecuteCommandAsync(
-            "bff", KnownResourceCommands.RestartCommand);
-        Assert.IsTrue(result.Success, result.Message);
-        await app.ResourceNotifications.WaitForResourceHealthyAsync("bff");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = timeout.Token;
+
+        // Not the restart command: on Linux, the BFF can take longer to
+        // exit than that command waits for, and then it does not start.
+        await app!.ResourceCommands.ExecuteCommandAsync(
+            "bff", KnownResourceCommands.StopCommand, ct);
+        await app.ResourceNotifications.WaitForResourceAsync(
+            "bff", KnownResourceStates.TerminalStates, ct);
+        var start = await app.ResourceCommands.ExecuteCommandAsync(
+            "bff", KnownResourceCommands.StartCommand, ct);
+        Assert.IsTrue(start.Success, start.Message);
+        await app.ResourceNotifications.WaitForResourceHealthyAsync("bff", ct);
     }
 
     [AssemblyCleanup]
