@@ -1,5 +1,6 @@
-using System.Security.Claims;
+using System.Net;
 using System.Security.Cryptography;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
@@ -72,8 +73,15 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
+// In production, the built app comes from wwwroot. It runs no
+// inline script, so its pages get a strict policy.
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = file =>
+        file.Context.Response.Headers.ContentSecurityPolicy =
+            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+});
 
 // CSRF defense: the app's scripts send this header. A page on
 // another origin cannot send it without a CORS preflight, and
@@ -96,6 +104,8 @@ app.UseAuthorization();
 
 app.MapDefaultEndpoints();
 
+var tokens = app.Services.GetRequiredService<AccessTokens>();
+
 app.MapGet("/bff/login", () => TypedResults.Challenge(
     new() { RedirectUri = "/" }, [oidc]));
 
@@ -105,12 +115,14 @@ app.MapPost("/bff/logout", (HttpRequest request) =>
         ? Results.SignOut(new() { RedirectUri = "/" }, [cookie, oidc])
         : Results.StatusCode(403));
 
-app.MapGet("/bff/user", (ClaimsPrincipal user) =>
-    new { Name = user.Identity?.Name })
+// A session is active while the BFF can still get a token for it.
+app.MapGet("/bff/user", async (HttpContext context) =>
+    await tokens.GetAsync(context) is null
+        ? Results.Unauthorized()
+        : Results.Ok(new { Name = context.User.Identity?.Name }))
     .RequireAuthorization();
 
 // The only API route: GET /api/forecast goes to GET /forecast.
-var tokens = app.Services.GetRequiredService<AccessTokens>();
 app.MapForwarder("/api/forecast", Setting("ApiUrl"), transforms =>
 {
     transforms.AddPathSet("/forecast");
@@ -126,6 +138,15 @@ app.MapForwarder("/api/forecast", Setting("ApiUrl"), transforms =>
         }
         context.ProxyRequest.Headers.Authorization =
             new("Bearer", token);
+    });
+    // If the API refuses the token, the session is over too.
+    transforms.AddResponseTransform(async context =>
+    {
+        if (context.ProxyResponse?.StatusCode
+            == HttpStatusCode.Unauthorized)
+        {
+            await context.HttpContext.SignOutAsync(cookie);
+        }
     });
 })
 .RequireAuthorization()

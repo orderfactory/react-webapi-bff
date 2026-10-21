@@ -12,6 +12,8 @@ This repository is the companion to the article [Backend for Frontend: The Brows
 - CSRF defense: the app sends `X-CSRF: 1` on every call, and the BFF refuses calls without it. Sign-out, a form post, must come from the BFF's own origin (`Sec-Fetch-Site: same-origin`).
 - The BFF forwards exactly one route, `GET /api/forecast`, to `GET /forecast` on the API, with the access token, and removes the browser's cookie.
 - One refresh per refresh token: concurrent requests share it, and for a minute afterward, requests that still send the old cookie get the same tokens.
+- A session counts as active only while the BFF can still get an access token for it. `/bff/user` refreshes the token when it is due and answers 401 once Keycloak has ended the session, and a 401 from the API ends the BFF's session too.
+- Built for production, the app is served with a strict Content Security Policy: `default-src 'self'; base-uri 'none'; frame-ancestors 'none'`.
 - The API is the one from react-webapi-oidc without its CORS policy, which the browser no longer needs. It checks the signature, issuer, audience, expiry (with a 30-second clock tolerance), and the `meteorologist` role.
 
 ## System overview
@@ -104,7 +106,7 @@ AppHost/                   Aspire AppHost
 Api/                       ASP.NET Core minimal API
   Program.cs               Token validation, role policy, GET /forecast
 Bff/                       ASP.NET Core backend for frontend
-  Program.cs               Cookie, OpenID Connect, CSRF check, endpoints, forwarder
+  Program.cs               Cookie, OpenID Connect, CSP, CSRF check, endpoints, forwarder
   ClientAssertion.cs       The signed JWT that authenticates the BFF
   AccessTokens.cs          The session's access token, refreshed once per refresh token
 ServiceDefaults/           Aspire service defaults: OpenTelemetry, health checks
@@ -121,6 +123,7 @@ In `spa`, `npm run lint` runs [Oxlint](https://oxc.rs/docs/guide/usage/linter.ht
 - **Data Protection keys.** The cookie is encrypted with ASP.NET Core Data Protection. Every BFF instance needs the same keys, persisted outside the process, and the same application name (`SetApplicationName`); otherwise users are signed out on every restart and on every other instance. By default, Data Protection isolates apps by their content root path: a clone of this repository in another folder could not read a cookie that the original had issued, though both used the same keys.
 - **The client key.** Keep the private key in a key vault or a certificate store, and let Keycloak read the public key from a JWKS URL the BFF publishes, so keys can rotate without a realm change.
 - **More than one instance.** The one-minute refresh cache lives in each process. Without rotation, a request on another instance only costs an extra refresh. With rotation, an old cookie that reaches another instance ends the session, so route each session to one instance or leave rotation off.
+- **Rotating Keycloak's keys.** Keycloak signs with the active key of the highest priority. ASP.NET Core's handlers fetch new keys only when a token names one they don't have, and they fail that request: a key added at a higher priority made the BFF's next sign-in fail and the API refuse the next session's first token. Add a new key at a lower priority instead, let the BFF and the API fetch it (they refresh every 12 hours), and then raise its priority.
 
 ## Troubleshooting
 
@@ -128,6 +131,8 @@ In `spa`, `npm run lint` runs [Oxlint](https://oxc.rs/docs/guide/usage/linter.ht
 - **A resource fails with an address already in use:** ports 3443, 3445, and 3446 must be free. react-webapi-oidc uses the same ports, so stop it first.
 - **`keycloak` stays unhealthy:** make sure the container runtime is running, and read the resource's console logs in the dashboard.
 - **Asked to sign in again after a restart:** each run imports a new realm with new keys, so a session from an earlier run ends at its next API call.
+- **Sign-in fails with `IDX10503: Signature validation failed` after you restart only `keycloak`:** the realm came back with new signing keys that the running BFF and API haven't fetched. Each fetches them after the first token it can't verify, but at most once every 5 minutes. Restart the whole AppHost instead.
+- **The BFF fails to start with `DirectoryNotFoundException` for `Bff\wwwroot`:** you built the BFF with a `wwwroot` folder and then removed it. Delete `Bff/obj` and `Bff/bin` and build again.
 
 ## License
 
