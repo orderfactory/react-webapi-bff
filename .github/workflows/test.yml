@@ -29,10 +29,13 @@ jobs:
         with:
           node-version: 22
 
+      # On Linux, OpenSSL trusts the certificate only through SSL_CERT_DIR,
+      # which the trust command checks and the tests need.
       - name: Trust the ASP.NET Core development certificate
         run: |
+          export SSL_CERT_DIR="$HOME/.aspnet/dev-certs/trust:/usr/lib/ssl/certs"
+          echo "SSL_CERT_DIR=$SSL_CERT_DIR" >> "$GITHUB_ENV"
           dotnet dev-certs https --trust
-          echo "SSL_CERT_DIR=$HOME/.aspnet/dev-certs/trust:/usr/lib/ssl/certs" >> "$GITHUB_ENV"
 
       - name: Test
         run: dotnet test --project Tests
