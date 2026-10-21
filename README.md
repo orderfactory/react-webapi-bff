@@ -81,7 +81,7 @@ The `Tests` project starts the AppHost, with Keycloak in its container, and chec
 dotnet test --project Tests
 ```
 
-The tests use MSTest on Microsoft.Testing.Platform, which `global.json` selects for `dotnet test`. A run takes about a minute and a half, most of it Keycloak's startup. The `Test` workflow runs them on every push.
+The tests use MSTest on Microsoft.Testing.Platform, which `global.json` selects for `dotnet test`. A run takes about a minute and a half, most of it Keycloak's startup. The `Test` workflow in `.github/workflows` runs them on a GitHub-hosted Linux runner, but only when started by hand from the Actions tab: nothing runs it automatically. In a fork, enable Actions first.
 
 ## Keycloak configuration
 
